@@ -1,36 +1,53 @@
-def sla_risk(vm):
-    return not vm.sla_ok
-
-
-def carbon_high(dc):
-    return dc.carbon > 0.7
-
-
-def energy_exceeded(dc):
-    return dc.energy_used > dc.energy_budget
-
-
-def decide(vm, dcs):
+def decide(vm, dcs, current_time, df, error, trend):
     current_dc = vm.dc
 
-    # 1️⃣ SLA PRIORITY (HIGHEST)
-    if sla_risk(vm):
-        # send to most powerful DC (highest energy budget)
-        return max(dcs, key=lambda d: d.energy_budget)
+    row = df.iloc[current_time % len(df)]
+    forecast = row["forecast"]
 
-    # 2️⃣ ENERGY CONSTRAINT
-    if energy_exceeded(current_dc):
-        return min(dcs, key=lambda d: d.energy_used)
+    # -----------------------------
+    # 1. CARBON BUDGET
+    # -----------------------------
+    if vm.carbon_budget <= 0:
+        return min(dcs, key=lambda d: d.carbon)
 
-    # 3️⃣ CONTROLLED DELAY (max 3 times)
-    if vm.type == "flexible" and carbon_high(current_dc):
-        if vm.delay_count < 3:
+    # -----------------------------
+    # 2. TREND-BASED
+    # -----------------------------
+    if trend == "increasing":
+        if current_time - vm.last_migration_time < 2:
+            return current_dc   # stay
+
+    return min(dcs, key=lambda d: d.carbon)
+
+    if trend == "decreasing":
+        if vm.type == "flexible" and vm.delay_count < 2:
             vm.delay_count += 1
             return "delay"
 
-    # 4️⃣ CARBON OPTIMIZATION
-    if carbon_high(current_dc):
-        return min(dcs, key=lambda d: d.carbon)
+    # -----------------------------
+    # 3. ERROR-AWARE
+    # -----------------------------
+    if error > 8:
+        return max(dcs, key=lambda d: d.energy_budget)
 
-    # 5️⃣ DEFAULT: stay
+    # -----------------------------
+    # 4. SLA
+    # -----------------------------
+    if not vm.sla_ok:
+        return max(dcs, key=lambda d: d.energy_budget)
+
+    # -----------------------------
+    # 5. MIGRATION COST
+    # -----------------------------
+    if current_time - vm.last_migration_time < 2:
+        return current_dc
+
+    # -----------------------------
+    # 6. CARBON + CREDIT
+    # -----------------------------
+    best_dc = min(dcs, key=lambda d: (d.carbon - d.credits * 0.001))
+
+    if forecast > 350:
+        return best_dc
+
     return current_dc

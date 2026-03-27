@@ -1,32 +1,31 @@
 import simpy
+import pandas as pd
 from models import DataCenter, VM
 from agent import decide
 
 
 def simulate(config):
     env = simpy.Environment()
+    df = pd.read_csv("carbon_data.csv")
 
     # -----------------------------
-    # Create Data Centers
+    # Data Centers
     # -----------------------------
     dcs = [
-        DataCenter("DC1", carbon=0.2, energy_budget=1000),
-        DataCenter("DC2", carbon=0.5, energy_budget=800),
-        DataCenter("DC3", carbon=0.9, energy_budget=600)
+        DataCenter("DC1", 0.2, 1000),
+        DataCenter("DC2", 0.5, 800),
+        DataCenter("DC3", 0.9, 600)
     ]
 
     # -----------------------------
-    # Create VMs
+    # VMs
     # -----------------------------
     vms = []
     for i in range(6):
-        vm_type = "flexible" if i % 2 == 0 else "critical"
-        vm = VM(i, vm_type)
-
+        vm = VM(i, "flexible" if i % 2 == 0 else "critical")
         dc = dcs[i % len(dcs)]
         vm.dc = dc
         dc.vms.append(vm)
-
         vms.append(vm)
 
     # -----------------------------
@@ -40,55 +39,82 @@ def simulate(config):
     total_carbon = 0
     baseline_carbon = 0
 
+    carbon_history = []
+
+    # 🔥 FIX: declare trend globally
+    final_trend = "stable"
+
     # -----------------------------
     # Simulation Process
     # -----------------------------
     def process(env):
         nonlocal migrations, delayed_tasks, sla_violations
         nonlocal total_carbon, baseline_carbon
+        nonlocal final_trend   # ✅ IMPORTANT FIX
 
         while env.now < 10:
+            row = df.iloc[env.now % len(df)]
 
+            forecast = row["forecast"]
+            actual = row["actual"]
+
+            carbon_history.append(forecast)
+
+            # -----------------------------
+            # TREND DETECTION
+            # -----------------------------
+            if len(carbon_history) >= 2:
+                if carbon_history[-1] > carbon_history[-2]:
+                    final_trend = "increasing"
+                elif carbon_history[-1] < carbon_history[-2]:
+                    final_trend = "decreasing"
+                else:
+                    final_trend = "stable"
+            else:
+                final_trend = "stable"
+
+            logs.append(f"Time {env.now}: Trend={final_trend}")
+
+            # -----------------------------
+            # UPDATE DC CARBON
+            # -----------------------------
+            for i, dc in enumerate(dcs):
+                dc.carbon = df.iloc[(env.now + i) % len(df)]["forecast"] / 500
+
+            # -----------------------------
+            # ERROR
+            # -----------------------------
+            error = abs(actual - forecast)
+
+            logs.append(
+                f"Time {env.now}: Forecast={forecast}, Actual={actual}, Error={error}"
+            )
+
+            # -----------------------------
+            # PROCESS VMs
+            # -----------------------------
             for vm in vms:
-
                 current_dc = vm.dc
 
-                # -----------------------------
-                # SLA CHECK (FIXED)
-                # -----------------------------
+                # SLA CHECK
                 if current_dc.energy_used > current_dc.energy_budget * 0.8:
                     vm.sla_ok = False
-
-                    if not vm.sla_violated:
-                        sla_violations += 1
-                        vm.sla_violated = True
+                    sla_violations += 1
                 else:
                     vm.sla_ok = True
-                    vm.sla_violated = False
 
-                # -----------------------------
-                # Baseline carbon (no optimization)
-                # -----------------------------
                 baseline_carbon += current_dc.carbon * 10
 
-                # -----------------------------
-                # Decision Making
-                # -----------------------------
-                decision = decide(vm, dcs)
+                # DECISION
+                decision = decide(vm, dcs, env.now, df, error, final_trend)
 
-                # -----------------------------
-                # Delay Handling
-                # -----------------------------
+                # DELAY
                 if decision == "delay":
                     delayed_tasks += 1
-                    logs.append(
-                        f"Time {env.now}: VM{vm.id} delayed (carbon high in {current_dc.name})"
-                    )
+                    logs.append(f"Time {env.now}: VM{vm.id} delayed")
                     continue
 
-                # -----------------------------
-                # Migration Handling
-                # -----------------------------
+                # MIGRATION
                 if decision != current_dc:
                     logs.append(
                         f"Time {env.now}: VM{vm.id} moved {current_dc.name} → {decision.name}"
@@ -98,35 +124,42 @@ def simulate(config):
                     vm.dc = decision
                     decision.vms.append(vm)
 
+                    vm.last_migration_time = env.now
                     migrations += 1
 
-                # -----------------------------
-                # Energy Usage
-                # -----------------------------
+                # ENERGY
                 vm.dc.energy_used += 50
 
                 # -----------------------------
-                # Actual carbon usage
+                # CARBON BUDGET
                 # -----------------------------
+                vm.carbon_budget -= vm.dc.carbon * 10
+
+                # TRACK CARBON
                 total_carbon += vm.dc.carbon * 10
 
                 # -----------------------------
-                # Carbon Credits (optional logic)
+                # CREDIT SYSTEM
                 # -----------------------------
-                if vm.dc.carbon < 0.5:
-                    vm.dc.credits += 5
+                if vm.dc.carbon < 0.4:
+                    vm.dc.credits += 10
                 else:
                     vm.dc.credits -= 5
 
             yield env.timeout(1)
 
-    # Run simulation
     env.process(process(env))
     env.run()
 
     # -----------------------------
-    # Final Metrics
+    # FINAL METRICS
     # -----------------------------
+    total_credits = sum(dc.credits for dc in dcs)
+
+    avg_migration_cost = migrations / len(vms) if len(vms) > 0 else 0
+
+    total_remaining_budget = sum(vm.carbon_budget for vm in vms)
+
     carbon_saved = max(baseline_carbon - total_carbon, 0)
 
     return {
@@ -134,5 +167,9 @@ def simulate(config):
         "sla_violations": sla_violations,
         "migrations": migrations,
         "delayed_tasks": delayed_tasks,
+        "total_credits": total_credits,
+        "avg_migration_cost": round(avg_migration_cost, 2),
+        "remaining_budget": round(total_remaining_budget, 2),
+        "trend": final_trend,
         "logs": logs
     }
