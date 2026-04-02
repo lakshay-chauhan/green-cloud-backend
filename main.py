@@ -9,10 +9,10 @@ from simulation import simulate
 
 app = FastAPI(title="Green Cloud & Code Analyzer API")
 
-# ✅ FIXES THE CORS ERROR: Allows your Vercel frontend to talk to Render
+# ✅ CORS FIX: Allows your Vercel frontend to communicate with this Render backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,7 +35,7 @@ async def analyze_code(payload: CodePayload):
         raise HTTPException(status_code=500, detail="API Key not configured on server.")
 
     prompt = f"""
-    Analyze the following code for complexity:
+    Analyze the following code for complexity.
     1. Estimate CPU Cycles (T) for n=1000.
     2. Estimate Memory usage in Bytes (S).
     
@@ -45,34 +45,48 @@ async def analyze_code(payload: CodePayload):
     CODE:
     {payload.code}
     
-    Return ONLY raw JSON. No markdown, no explanation.
+    Return ONLY the raw JSON. No markdown, no explanation.
     """
     
     try:
         response = model.generate_content(prompt)
+        # Use regex to extract JSON in case the model adds extra text
         json_match = re.search(r"\{.*\}", response.text, re.DOTALL)
         if not json_match:
-            raise ValueError("Invalid AI response")
+            raise ValueError("Invalid AI response format")
             
         data = json.loads(json_match.group())
-        
-        # Calculate environmental impact constants
-        T, S = float(data.get("T", 0)), float(data.get("S", 0))
+        T, S = float(data.get("T", 5000)), float(data.get("S", 256))
+
+        # Calculate Environmental Impact
         energy_j = (0.8e-9 * T) + (1.2e-9 * S)
         water_ml = (energy_j / 3600000) * 1.8 * 1000
         
-        # Assign Grade
-        score = (energy_j * 10**5) + (water_ml * 50)
-        grade = "A+ (Efficient)" if score < 10 else "D (Resource Heavy)"
+        # Rating Logic
+        impact_score = (energy_j * 10**5) + (water_ml * 50)
+        grade = "A+ (Efficient)" if impact_score < 10 else "D (Resource Heavy)"
 
         return {
-            "environmental_impact": {"energy_joules": energy_j, "water_usage_ml": water_ml},
+            "environmental_impact": {
+                "energy_joules": energy_j,
+                "water_usage_ml": water_ml
+            },
             "sustainability_rating": grade,
             "parameters": {"T": T, "S": S}
         }
     except Exception as e:
+        print(f"Analysis Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/run-simulation")
-def run_simulation(payload: dict):
-    return simulate(payload)
+def run_simulation_endpoint(payload: dict):
+    try:
+        return simulate(payload)
+    except Exception as e:
+        print(f"Simulation Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
