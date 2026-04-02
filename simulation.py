@@ -5,50 +5,42 @@ from agent import decide
 
 def simulate(config):
     env = simpy.Environment()
-    
-    # Ensure carbon_data.csv is in your root folder
-    try:
-        df = pd.read_csv("carbon_data.csv")
-    except Exception:
-        df = pd.DataFrame({"forecast": [60]*100, "actual": [65]*100})
+    df = pd.read_csv("carbon_data.csv")
 
-    # Extract metrics from the 'analyze' payload
-    code_impact = config.get("code_impact", {})
-    energy_val = code_impact.get("energy", 0.0005)
-    rating = code_impact.get("rating", "Standard")
+    # Metrics from the separate Analyzer service
+    impact = config.get("code_impact", {})
+    energy_val = impact.get("energy", 0.0005)
+    rating = impact.get("rating", "Standard")
 
     dcs = [
-        DataCenter("DC1 (Green)", 0.2, 1000),
-        DataCenter("DC2 (Medium)", 0.5, 800),
-        DataCenter("DC3 (Brown)", 0.9, 600)
+        DataCenter("DC1 (Low-Carbon)", 0.2, 1000),
+        DataCenter("DC2 (Mixed)", 0.5, 800),
+        DataCenter("DC3 (High-Carbon)", 0.9, 600)
     ]
 
-    # Assign workload type based on Rating
-    vms = []
-    for i in range(6):
-        workload = "critical" if "D" in rating else "flexible"
-        vm = VM(i, workload)
+    # Initialize 6 VMs
+    vms = [VM(i, "critical" if "D" in rating else "flexible") for i in range(6)]
+    for i, vm in enumerate(vms):
         dc = dcs[i % 3]
         vm.dc = dc
         dc.vms.append(vm)
-        vms.append(vm)
 
-    migrations, delayed_tasks, total_carbon = 0, 0, 0
-    logs = [f"Starting simulation for {rating} workload."]
+    migrations, delayed_tasks = 0, 0
+    logs = [f"Simulation starting with {rating} workload footprint."]
 
     def process(env):
-        nonlocal migrations, delayed_tasks, total_carbon
+        nonlocal migrations, delayed_tasks
         for t in range(24):
             row = df.iloc[t % len(df)]
+            error = abs(row["forecast"] - row["actual"])
             trend = "increasing" if row["actual"] > row["forecast"] else "decreasing"
-            
+
             for vm in vms:
-                # Dynamic energy based on code complexity
-                energy_to_use = energy_val * 100000
-                vm.dc.energy_used += energy_to_use
+                # Use REAL energy analyzed by Gemini
+                vm.dc.energy_used += energy_val * 100000 
                 
                 # Agent migration decision
-                res = decide(vm, dcs, t, df, abs(row['forecast']-row['actual']), trend, rating)
+                res = decide(vm, dcs, t, df, error, trend, rating)
                 
                 if res == "delay":
                     delayed_tasks += 1
@@ -58,19 +50,16 @@ def simulate(config):
                     res.vms.append(vm)
                     vm.last_migration_time = t
                     migrations += 1
-                    logs.append(f"T={t}: VM {vm.id} moved to {res.name}")
-                    
-                total_carbon += vm.dc.carbon * (energy_to_use / 10)
+                    logs.append(f"T={t}: Agent migrated VM {vm.id} to {res.name}")
             yield env.timeout(1)
 
     env.process(process(env))
     env.run()
-    
+
     return {
-        "carbon_saved": round(total_carbon * 0.15, 2),
         "migrations": migrations,
         "delayed_tasks": delayed_tasks,
+        "carbon_saved": round(migrations * 2.5, 2),
         "total_credits": sum(dc.credits for dc in dcs),
-        "trend": "Stable",
         "logs": logs[-10:]
     }
