@@ -1,71 +1,61 @@
 import simpy
-import pandas as pd
-from models import DataCenter, VM
-from agent import decide
+                if row["actual"] > row["forecast"]
+                else "decreasing"
+            )
 
-def simulate(config):
-    env = simpy.Environment()
-    
-    # Safety load for CSV
-    try:
-        df = pd.read_csv("carbon_data.csv")
-    except Exception:
-        df = pd.DataFrame({"forecast": [50]*48, "actual": [55]*48})
-
-    # Get the 2 workloads from your App.js
-    workload_configs = config.get("workloads", [])
-
-    dcs = [
-        DataCenter("DC1 (Green)", 0.2, 1000),
-        DataCenter("DC2 (Medium)", 0.5, 800),
-        DataCenter("DC3 (Brown)", 0.9, 600)
-    ]
-
-    # Use a dictionary for stats to avoid 'nonlocal' issues
-    stats = {"migrations": 0, "logs": []}
-    vms = []
-
-    # Create VMs for your two code blocks
-    for i, w in enumerate(workload_configs):
-        # Assign "critical" if D rating to show it needs high-availability green power
-        vm_type = "critical" if "D" in w['rating'] else "flexible"
-        vm = VM(i, vm_type)
-        vm.energy_val = w['energy_joules']
-        vm.rating = w['rating']
-        vm.last_migration_time = -5
-        
-        # Start both on the Brown DC (DC3) so the agent is forced to migrate them
-        vm.dc = dcs[2]
-        dcs[2].vms.append(vm)
-        vms.append(vm)
-
-    def process_loop(env):
-        for t in range(24):
-            row = df.iloc[t % len(df)]
-            error = abs(row["forecast"] - row["actual"])
-            trend = "increasing" if row["actual"] > row["forecast"] else "decreasing"
-            
             for vm in vms:
-                # Real physical consumption
-                vm.dc.energy_used += (vm.energy_val * 100000)
-                
-                # Agent migration logic
+                vm.dc.energy_used += vm.energy_val * 100000
+
                 target = decide(vm, dcs, t, df, error, trend, vm.rating)
-                
+
                 if target != "delay" and target != vm.dc:
-                    vm.dc.vms.remove(vm)
+                    old_dc = vm.dc
+                    old_dc.vms.remove(vm)
+
                     vm.dc = target
                     target.vms.append(vm)
                     vm.last_migration_time = t
+
                     stats["migrations"] += 1
-                    stats["logs"].append(f"T={t}: VM {vm.id} ({vm.rating}) moved to {target.name}")
+                    stats["logs"].append(
+                        f"T={t}: VM {vm.id} ({vm.rating}) migrated from {old_dc.name} to {target.name}"
+                    )
+
+                stats["carbon_after"] += vm.energy_val * vm.dc.carbon * 1000
+                stats["energy_after"] += vm.energy_val
+
+                if vm.delay_count > 3:
+                    stats["sla_violations"] += 1
+
             yield env.timeout(1)
 
     env.process(process_loop(env))
     env.run()
-    
+
+    carbon_saved = max(
+        0,
+        stats["carbon_before"] - stats["carbon_after"],
+    )
+
+    carbon_saved_percent = (
+        round((carbon_saved / stats["carbon_before"]) * 100, 2)
+        if stats["carbon_before"] > 0
+        else 0
+    )
+
     return {
         "migrations": stats["migrations"],
-        "logs": stats["logs"][-20:], # Send last 20 logs to UI
-        "status": "Success"
+        "logs": stats["logs"][-20:],
+        "status": "Success",
+        "carbon_before": round(stats["carbon_before"], 4),
+        "carbon_after": round(stats["carbon_after"], 4),
+        "carbon_saved_percent": carbon_saved_percent,
+        "energy_before": round(stats["energy_before"], 6),
+        "energy_after": round(stats["energy_after"], 6),
+        "sla_violations": stats["sla_violations"],
+        "dc_distribution": {
+            "green": len(dcs[0].vms),
+            "medium": len(dcs[1].vms),
+            "brown": len(dcs[2].vms),
+        },
     }

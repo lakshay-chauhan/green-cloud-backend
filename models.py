@@ -17,6 +17,6 @@ class VM:
         self.sla_violated = False
         self.delay_count = 0
         self.last_migration_time = -10
-
-        # 🔥 Carbon Budget
         self.carbon_budget = 500
+        self.energy_val = 0
+        self.rating = ""
