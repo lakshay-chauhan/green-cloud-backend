@@ -18,9 +18,9 @@ def simulate(config):
     workload_configs = config.get("workloads", [])
 
     dcs = [
-        DataCenter("DC1 (Green)", 0.2, 1000),
-        DataCenter("DC2 (Medium)", 0.5, 800),
-        DataCenter("DC3 (Brown)", 0.9, 600)
+        DataCenter("DC1 (Green)", 100, 1000),
+        DataCenter("DC2 (Medium)", 300, 800),
+        DataCenter("DC3 (Brown)", 700, 600)
     ]
 
     stats = {
@@ -36,7 +36,7 @@ def simulate(config):
 
     vms = []
 
-    # USER TASK VMs
+    # ---------- User workloads ----------
     for i, w in enumerate(workload_configs):
         vm_type = "critical" if "D" in w["rating"] else "flexible"
 
@@ -46,12 +46,13 @@ def simulate(config):
         vm.priority = 3 if "D" in w["rating"] else 1
         vm.last_migration_time = -5
 
+        # Start on brown DC
         vm.dc = dcs[2]
         dcs[2].vms.append(vm)
 
         vms.append(vm)
 
-    # BACKGROUND VM 1
+    # ---------- Background VMs ----------
     bg_vm1 = VM(2, "background")
     bg_vm1.energy_val = 0.02
     bg_vm1.rating = "B (Moderate)"
@@ -60,7 +61,6 @@ def simulate(config):
     dcs[1].vms.append(bg_vm1)
     vms.append(bg_vm1)
 
-    # BACKGROUND VM 2
     bg_vm2 = VM(3, "critical")
     bg_vm2.energy_val = 0.03
     bg_vm2.rating = "D (Resource Heavy)"
@@ -69,19 +69,20 @@ def simulate(config):
     dcs[2].vms.append(bg_vm2)
     vms.append(bg_vm2)
 
-    # INITIAL METRICS
+    # ---------- Initial metrics ----------
     for vm in vms:
         stats["carbon_before"] += (
-            vm.energy_val * vm.dc.carbon * 1000
+            vm.energy_val * vm.dc.carbon
         )
-
         stats["energy_before"] += vm.energy_val
 
     def process_loop(env):
         for t in range(24):
             row = df.iloc[t % len(df)]
 
-            error = abs(row["forecast"] - row["actual"])
+            error = abs(
+                row["forecast"] - row["actual"]
+            )
 
             trend = (
                 "increasing"
@@ -89,12 +90,22 @@ def simulate(config):
                 else "decreasing"
             )
 
+            # IMPORTANT FIX:
+            # reset active DC utilization every timestep
+            for dc in dcs:
+                dc.energy_used = 0
+
+            # calculate current active load
+            for vm in vms:
+                vm.dc.energy_used += (
+                    vm.energy_val * 1000
+                )
+
             for vm in vms:
                 current_dc = vm.dc
 
                 projected_load = (
                     current_dc.energy_used
-                    + vm.energy_val * 100000
                 )
 
                 # overload restriction
@@ -130,7 +141,7 @@ def simulate(config):
                         )
                         continue
 
-                    # cooldown
+                    # cooldown restriction
                     if t - vm.last_migration_time < 3:
                         stats["logs"].append(
                             f"T={t}: VM {vm.id} cooldown active"
@@ -155,12 +166,8 @@ def simulate(config):
                         f"| credits used"
                     )
 
-                vm.dc.energy_used += (
-                    vm.energy_val * 100000
-                )
-
                 stats["carbon_after"] += (
-                    vm.energy_val * vm.dc.carbon * 1000
+                    vm.energy_val * vm.dc.carbon
                 )
 
                 stats["energy_after"] += vm.energy_val
@@ -191,32 +198,24 @@ def simulate(config):
         "migrations": stats["migrations"],
         "logs": stats["logs"][-20:],
         "status": "Success",
-
         "carbon_before": round(
             stats["carbon_before"], 4
         ),
-
         "carbon_after": round(
             stats["carbon_after"], 4
         ),
-
         "carbon_saved_percent":
             carbon_saved_percent,
-
         "energy_before": round(
             stats["energy_before"], 6
         ),
-
         "energy_after": round(
             stats["energy_after"], 6
         ),
-
         "sla_violations":
             stats["sla_violations"],
-
         "credit_penalties":
             stats["credit_penalties"],
-
         "dc_distribution": {
             "green": len(dcs[0].vms),
             "medium": len(dcs[1].vms),
