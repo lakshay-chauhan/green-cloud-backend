@@ -6,8 +6,6 @@ from agent import decide
 def simulate(config):
     env = simpy.Environment()
     df = pd.read_csv("carbon_data.csv")
-    
-    # Get workloads from payload
     workload_configs = config.get("workloads", [])
 
     dcs = [
@@ -16,26 +14,18 @@ def simulate(config):
         DataCenter("DC3 (Brown)", 0.9, 600)
     ]
 
-    # Tracking variables defined in simulate() scope
-    vars_dict = {
-        "migrations": 0,
-        "logs": []
-    }
+    # Shared state for nonlocal-safe tracking
+    stats = {"migrations": 0, "total_energy_j": 0, "logs": []}
 
     vms = []
-    # Create 8 VMs: First 2 are user-defined, others are noise
-    for i in range(8):
-        if i < len(workload_configs):
-            impact = workload_configs[i]
-            vm = VM(i, "critical" if "D" in impact['rating'] else "flexible")
-            vm.analyzed_energy = impact['energy']
-            vm.rating = impact['rating']
-        else:
-            vm = VM(i, "flexible")
-            vm.analyzed_energy = 0.0001
-            vm.rating = "A+ (Efficient)"
-
-        # Start everything on DC3 (Brown) to force migrations
+    # Setup VMs for the two codes entered in UI
+    for i in range(len(workload_configs)):
+        w = workload_configs[i]
+        vm = VM(i, "critical" if "D" in w['rating'] else "flexible")
+        vm.energy_val = w['energy_joules']
+        vm.rating = w['rating']
+        
+        # Initial placement on Brown DC to force the Agent to work
         dc = dcs[2]
         vm.dc = dc
         dc.vms.append(vm)
@@ -48,28 +38,26 @@ def simulate(config):
             trend = "increasing" if row["actual"] > row["forecast"] else "decreasing"
 
             for vm in vms:
-                # Dynamic Energy Consumption
-                vm.dc.energy_used += vm.analyzed_energy * 100000
+                # Consume Energy derived from Gemini analysis
+                vm.dc.energy_used += (vm.energy_val * 100000)
+                stats["total_energy_j"] += vm.energy_val
                 
-                # Agent Decision
-                target_dc = decide(vm, dcs, t, df, error, trend, vm.rating)
+                target = decide(vm, dcs, t, df, error, trend, vm.rating)
                 
-                if target_dc != "delay" and target_dc != vm.dc:
-                    # Perform Migration
+                if target != "delay" and target != vm.dc:
                     vm.dc.vms.remove(vm)
-                    vm.dc = target_dc
-                    target_dc.vms.append(vm)
+                    vm.dc = target
+                    target.vms.append(vm)
                     vm.last_migration_time = t
-                    vars_dict["migrations"] += 1
-                    vars_dict["logs"].append(f"T={t}: VM {vm.id} ({vm.rating}) moved to {target_dc.name}")
-            
+                    stats["migrations"] += 1
+                    stats["logs"].append(f"T={t}: VM {vm.id} ({vm.rating}) moved to {target.name}")
             yield env.timeout(1)
 
     env.process(process(env))
     env.run()
 
     return {
-        "migrations": vars_dict["migrations"],
-        "logs": vars_dict["logs"][-15:],
-        "carbon_saved": round(vars_dict["migrations"] * 1.8, 2)
+        "migrations": stats["migrations"],
+        "total_energy_joules": stats["total_energy_j"],
+        "logs": stats["logs"][-15:]
     }
