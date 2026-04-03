@@ -17,6 +17,7 @@ def simulate(config):
 
     workload_configs = config.get("workloads", [])
 
+    # carbon values = mg CO2 per energy unit
     dcs = [
         DataCenter("DC1 (Green)", 100, 1000),
         DataCenter("DC2 (Medium)", 300, 800),
@@ -27,16 +28,14 @@ def simulate(config):
         "migrations": 0,
         "logs": [],
         "carbon_before": 0,
-        "carbon_after": 0,
         "energy_before": 0,
-        "energy_after": 0,
         "sla_violations": 0,
         "credit_penalties": 0
     }
 
     vms = []
 
-    # ---------- User workloads ----------
+    # ---------------- User workloads ----------------
     for i, w in enumerate(workload_configs):
         vm_type = "critical" if "D" in w["rating"] else "flexible"
 
@@ -46,13 +45,13 @@ def simulate(config):
         vm.priority = 3 if "D" in w["rating"] else 1
         vm.last_migration_time = -5
 
-        # Start on brown DC
+        # start from brown DC
         vm.dc = dcs[2]
         dcs[2].vms.append(vm)
 
         vms.append(vm)
 
-    # ---------- Background VMs ----------
+    # ---------------- Background VMs ----------------
     bg_vm1 = VM(2, "background")
     bg_vm1.energy_val = 0.02
     bg_vm1.rating = "B (Moderate)"
@@ -69,7 +68,7 @@ def simulate(config):
     dcs[2].vms.append(bg_vm2)
     vms.append(bg_vm2)
 
-    # ---------- Initial metrics ----------
+    # ---------------- Initial Metrics ----------------
     for vm in vms:
         stats["carbon_before"] += (
             vm.energy_val * vm.dc.carbon
@@ -90,12 +89,11 @@ def simulate(config):
                 else "decreasing"
             )
 
-            # IMPORTANT FIX:
-            # reset active DC utilization every timestep
+            # reset active load every timestep
             for dc in dcs:
                 dc.energy_used = 0
 
-            # calculate current active load
+            # calculate current utilization
             for vm in vms:
                 vm.dc.energy_used += (
                     vm.energy_val * 1000
@@ -141,8 +139,8 @@ def simulate(config):
                         )
                         continue
 
-                    # cooldown restriction
-                    if t - vm.last_migration_time < 3:
+                    # cooldown
+                    if t - vm.last_migration_time < 1:
                         stats["logs"].append(
                             f"T={t}: VM {vm.id} cooldown active"
                         )
@@ -166,21 +164,24 @@ def simulate(config):
                         f"| credits used"
                     )
 
-                stats["carbon_after"] += (
-                    vm.energy_val * vm.dc.carbon
-                )
-
-                stats["energy_after"] += vm.energy_val
-
             yield env.timeout(1)
 
     env.process(process_loop(env))
     env.run()
 
+    # ---------------- Final Metrics ----------------
+    final_carbon_after = 0
+    final_energy_after = 0
+
+    for vm in vms:
+        final_carbon_after += (
+            vm.energy_val * vm.dc.carbon
+        )
+        final_energy_after += vm.energy_val
+
     carbon_saved = max(
         0,
-        stats["carbon_before"]
-        - stats["carbon_after"]
+        stats["carbon_before"] - final_carbon_after
     )
 
     carbon_saved_percent = (
@@ -198,24 +199,32 @@ def simulate(config):
         "migrations": stats["migrations"],
         "logs": stats["logs"][-20:],
         "status": "Success",
+
         "carbon_before": round(
             stats["carbon_before"], 4
         ),
+
         "carbon_after": round(
-            stats["carbon_after"], 4
+            final_carbon_after, 4
         ),
+
         "carbon_saved_percent":
             carbon_saved_percent,
+
         "energy_before": round(
             stats["energy_before"], 6
         ),
+
         "energy_after": round(
-            stats["energy_after"], 6
+            final_energy_after, 6
         ),
+
         "sla_violations":
             stats["sla_violations"],
+
         "credit_penalties":
             stats["credit_penalties"],
+
         "dc_distribution": {
             "green": len(dcs[0].vms),
             "medium": len(dcs[1].vms),
