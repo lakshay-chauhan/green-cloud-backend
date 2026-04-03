@@ -19,9 +19,9 @@ def simulate(config):
 
     # carbon values = mg CO2 per energy unit
     dcs = [
-        DataCenter("DC1 (Green)", 100, 1000),
-        DataCenter("DC2 (Medium)", 300, 800),
-        DataCenter("DC3 (Brown)", 700, 600)
+    DataCenter("DC1 (Green)", 100, 50),
+    DataCenter("DC2 (Medium)", 300, 40),
+    DataCenter("DC3 (Brown)", 700, 30)
     ]
 
     stats = {
